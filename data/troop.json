@@ -1,0 +1,4 @@
+[
+    {"name": "Pawn", "hp": 50, "atk": 150, "def": 100, "mana": 3, "exp": 5},
+    {"name": "Knight", "hp": 200, "atk": 300, "def": 150, "mana": 5, "exp": 25}
+]

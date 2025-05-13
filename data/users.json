@@ -1,0 +1,11 @@
+[
+    {
+        "username": "player1",
+        "password": "123",
+        "exp": 0,
+        "level": 1,
+        "mana": 5,
+        "towers": [],
+        "troops": []
+    }
+]
