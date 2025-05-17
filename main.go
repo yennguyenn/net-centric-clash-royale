@@ -8,6 +8,7 @@ import (
 
 	"tcr_project/handlers"
 	"tcr_project/models"
+	"tcr_project/network"
 )
 
 var (
@@ -17,30 +18,17 @@ var (
 )
 
 func main() {
-	fmt.Println("🚀 Starting TCR Server...")
+	fmt.Println("\U0001F680 Starting TCR Server...")
 
-	// Load player data from file
+	// Load player data
 	players, err := handlers.LoadPlayers()
 	if err != nil {
 		log.Fatalf("❌ Failed to load players: %v", err)
 	}
 
-	// Start listening on TCP port 9000
-	ln, err := net.Listen("tcp", ":9000")
-	if err != nil {
-		log.Fatalf("❌ Failed to start server: %v", err)
-	}
-	defer ln.Close()
-	fmt.Println("✅ Server listening on port 9000...")
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Println("⚠️ Connection error:", err)
-			continue
-		}
-		go handleConnection(conn, players)
-	}
+	network.StartTCPServer("9000", func(conn net.Conn) {
+		handleConnection(conn, players)
+	})
 }
 
 func handleConnection(conn net.Conn, playerMap map[string]*models.Player) {
@@ -53,13 +41,12 @@ func handleConnection(conn net.Conn, playerMap map[string]*models.Player) {
 
 	fmt.Fprintf(conn, "✅ Welcome, %s! Waiting for an opponent...\n", player.Username)
 
-	// Ghép cặp 2 người chơi
 	mutex.Lock()
 	if waitingPlayer == nil {
 		waitingPlayer = player
 		waitingConn = conn
 		mutex.Unlock()
-		select {} // giữ kết nối mở, chờ đối thủ
+		select {} // keep connection alive until opponent joins
 	} else {
 		player1 := waitingPlayer
 		conn1 := waitingConn
