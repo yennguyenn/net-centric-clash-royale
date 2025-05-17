@@ -1,13 +1,14 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
 	"sync"
-	"time"
 
 	"tcr_project/models"
+	"tcr_project/network"
 	"tcr_project/utils"
 )
 
@@ -21,42 +22,23 @@ type GameSession struct {
 	Mutex     *sync.Mutex
 }
 
-// Hàm entry point để bắt đầu trận
-func StartGameSession(p1, p2 *models.Player, c1, c2 net.Conn) {
+func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
 	session := &GameSession{
 		Player1:   p1,
 		Player2:   p2,
-		Conn1:     c1,
-		Conn2:     c2,
+		Conn1:     conn1,
+		Conn2:     conn2,
+		GameOver:  false,
 		TurnOwner: p1,
 		Mutex:     &sync.Mutex{},
 	}
 
-	session.Broadcast("🎮 Game started between " + p1.Username + " and " + p2.Username)
-
-	startTime := time.Now()
-	gameDuration := 3 * time.Minute
+	session.Broadcast("🔥 Match found! " + p1.Username + " vs " + p2.Username)
+	session.Broadcast("🎯 " + p1.Username + " will go first!")
 
 	for !session.GameOver {
-		elapsed := time.Since(startTime)
-		remaining := gameDuration - elapsed
-		if remaining <= 0 {
-			session.EndByTimeout()
-			return
-		}
-
-		mins := int(remaining.Minutes())
-		secs := int(remaining.Seconds()) % 60
-		timerDisplay := fmt.Sprintf("⏱ Time left: %02d:%02d", mins, secs)
-		session.Broadcast(timerDisplay)
-
 		session.TakeTurn()
 	}
-}
-
-func (gs *GameSession) Broadcast(msg string) {
-	fmt.Fprintln(gs.Conn1, msg)
-	fmt.Fprintln(gs.Conn2, msg)
 }
 
 func (gs *GameSession) TakeTurn() {
@@ -73,14 +55,14 @@ func (gs *GameSession) TakeTurn() {
 		opponent = gs.Player1
 	}
 
-	fmt.Fprintf(conn, "\n🎯 Your turn, %s\n", active.Username)
-	fmt.Fprintln(conn, "1. Deploy Troop")
-	fmt.Fprintln(conn, "2. Attack Tower")
-	fmt.Fprintln(conn, "3. Show Status")
-	fmt.Fprint(conn, "Choose: ")
+	menu := "🎯 Your turn, " + active.Username + "\n1. Deploy Troop\n2. Attack Tower\n3. Show Status"
+	network.SendPDU(conn, "menu", menu)
 
-	reader := NewReader(conn)
-	choice := strings.TrimSpace(reader.ReadLine())
+	pdu, err := network.ReadPDU(conn)
+	if err != nil {
+		return
+	}
+	choice := strings.TrimSpace(pdu.Payload)
 
 	switch choice {
 	case "1":
@@ -90,10 +72,9 @@ func (gs *GameSession) TakeTurn() {
 	case "3":
 		showStatus(conn, active)
 	default:
-		fmt.Fprintln(conn, "❗ Invalid choice.")
+		network.SendPDU(conn, "error", "❗ Invalid choice.")
 	}
 
-	// Chuyển lượt
 	if gs.TurnOwner == gs.Player1 {
 		gs.TurnOwner = gs.Player2
 	} else {
@@ -101,134 +82,95 @@ func (gs *GameSession) TakeTurn() {
 	}
 }
 
+func (gs *GameSession) Broadcast(msg string) {
+	network.SendPDU(gs.Conn1, "broadcast", msg)
+	network.SendPDU(gs.Conn2, "broadcast", msg)
+}
+
 func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.Conn) {
 	if len(attacker.Troops) == 0 {
-		fmt.Fprintln(conn, "❌ You have no troops.")
+		network.SendPDU(conn, "error", "❌ You have no troops.")
 		return
 	}
 
-	// Chọn mục tiêu
-	fmt.Fprintln(conn, "Choose tower to attack:")
+	// Select target tower
+	towerList := "Choose tower to attack:\n"
 	for i, t := range defender.Towers {
-		fmt.Fprintf(conn, "%d. %s (HP: %d)\n", i+1, t.Type, t.HP)
+		towerList += fmt.Sprintf("%d. %s (HP: %d)\n", i+1, t.Type, t.HP)
 	}
-	fmt.Fprint(conn, "Target #: ")
-	var targetIndex int
-	fmt.Fscanln(conn, &targetIndex)
-	targetIndex--
+	network.SendPDU(conn, "select", towerList)
 
+	pdu, err := network.ReadPDU(conn)
+	if err != nil {
+		return
+	}
+	targetIndex := parseIndex(pdu.Payload) - 1
 	if targetIndex < 0 || targetIndex >= len(defender.Towers) {
-		fmt.Fprintln(conn, "❌ Invalid selection.")
+		network.SendPDU(conn, "error", "❌ Invalid tower selection.")
 		return
 	}
 
-	// Danh sách troop để chọn
-	fmt.Fprintln(conn, "Choose your troop to attack with:")
+	// Select troop
+	troopList := "Choose your troop to attack with:\n"
 	for i, t := range attacker.Troops {
-		fmt.Fprintf(conn, "%d. %s (HP: %d, ATK: %d)\n", i+1, t.Name, t.HP, t.ATK)
+		troopList += fmt.Sprintf("%d. %s (HP: %d, ATK: %d)\n", i+1, t.Name, t.HP, t.ATK)
 	}
-	fmt.Fprint(conn, "Troop #: ")
-	var troopIndex int
-	fmt.Fscanln(conn, &troopIndex)
-	troopIndex--
+	network.SendPDU(conn, "select", troopList)
 
-	if troopIndex < 0 || troopIndex >= len(attacker.Troops) {
-		fmt.Fprintln(conn, "❌ Invalid troop.")
+	pdu, err = network.ReadPDU(conn)
+	if err != nil {
 		return
 	}
+	troopIndex := parseIndex(pdu.Payload) - 1
+	if troopIndex < 0 || troopIndex >= len(attacker.Troops) {
+		network.SendPDU(conn, "error", "❌ Invalid troop.")
+		return
+	}
+
 	troop := attacker.Troops[troopIndex]
+	attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
 
 	tower := &defender.Towers[targetIndex]
 	damage := utils.CalculateDamage(troop.ATK, tower.DEF, tower.CRIT)
-	attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
-
 	tower.HP -= damage
-	fmt.Fprintf(conn, "💥 %s dealt %d damage to %s\n", troop.Name, damage, tower.Type)
+
+	network.SendPDU(conn, "result", fmt.Sprintf("💥 %s dealt %d damage to %s", troop.Name, damage, tower.Type))
 
 	if tower.HP <= 0 {
-		fmt.Fprintf(conn, "🏰 %s destroyed!\n", tower.Type)
+		network.SendPDU(conn, "event", fmt.Sprintf("🏰 %s destroyed!", tower.Type))
 		if tower.Type == "King Tower" {
 			gs.GameOver = true
 			gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying the King Tower!", attacker.Username))
 			AddExp(attacker, 30)
 			AddExp(defender, 10)
 		}
-
 	}
-
 }
-
-func (gs *GameSession) EndByTimeout() {
-	gs.GameOver = true
-	// So sánh số tower còn sống
-	count1 := countAliveTowers(gs.Player1.Towers)
-	count2 := countAliveTowers(gs.Player2.Towers)
-
-	if count1 > count2 {
-		gs.Broadcast(fmt.Sprintf("⏰ Time's up! %s wins!", gs.Player1.Username))
-		AddExp(gs.Player1, 30)
-		AddExp(gs.Player2, 10)
-	} else if count2 > count1 {
-		gs.Broadcast(fmt.Sprintf("⏰ Time's up! %s wins!", gs.Player2.Username))
-		AddExp(gs.Player2, 30)
-		AddExp(gs.Player1, 10)
-	} else {
-		gs.Broadcast("⏰ Time's up! It's a draw!")
-		AddExp(gs.Player1, 10)
-		AddExp(gs.Player2, 10)
-	}
-
-}
-
-func countAliveTowers(towers []models.Tower) int {
-	count := 0
-	for _, t := range towers {
-		if t.HP > 0 {
-			count++
-		}
-	}
-	return count
-}
-
-type ConnReader struct {
-	conn net.Conn
-}
-
-func NewReader(conn net.Conn) *ConnReader {
-	return &ConnReader{conn: conn}
-}
-
-func (r *ConnReader) ReadLine() string {
-	buf := make([]byte, 1024)
-	n, err := r.conn.Read(buf)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(buf[:n]))
-}
-
-var troopList []models.Troop
-var loadOnce sync.Once
 
 func deployTroop(conn net.Conn, player *models.Player, mutex *sync.Mutex) {
-	reader := NewReader(conn)
-
-	// Load troops from JSON file once
 	loadOnce.Do(func() {
 		troops, err := utils.LoadTroopsFromFile("data/troops.json")
 		if err != nil {
-			fmt.Fprintln(conn, "❌ Failed to load troop list.")
+			network.SendPDU(conn, "error", "❌ Failed to load troop list.")
 			return
 		}
 		troopList = troops
 	})
 
-	fmt.Fprint(conn, "Enter troop name to deploy: ")
-	troopName := strings.TrimSpace(reader.ReadLine())
+	available := "Available Troops:\n"
+	for _, t := range troopList {
+		available += fmt.Sprintf("- %s (Mana: %d, ATK: %d, DEF: %d)\n", t.Name, t.Mana, t.ATK, t.DEF)
+	}
+	network.SendPDU(conn, "select", available+"\nEnter troop name to deploy:")
 
+	pdu, err := network.ReadPDU(conn)
+	if err != nil {
+		return
+	}
+	troopName := strings.TrimSpace(pdu.Payload)
 	troop := utils.GetTroopByName(troopList, troopName)
 	if troop == nil {
-		fmt.Fprintln(conn, "❌ Troop not found.")
+		network.SendPDU(conn, "error", "❌ Troop not found.")
 		return
 	}
 
@@ -236,25 +178,37 @@ func deployTroop(conn net.Conn, player *models.Player, mutex *sync.Mutex) {
 	defer mutex.Unlock()
 
 	if player.Mana < troop.Mana {
-		fmt.Fprintf(conn, "❌ Not enough mana. You have %d, need %d.\n", player.Mana, troop.Mana)
+		network.SendPDU(conn, "error", fmt.Sprintf("❌ Not enough mana. You have %d, need %d.", player.Mana, troop.Mana))
 		return
 	}
 
-	// Handle special effect: Queen heals tower
 	if strings.ToLower(troop.Special) == "heal" {
 		tower := getLowestHPTower(player.Towers)
 		if tower != nil {
 			tower.HP += 300
-			fmt.Fprintf(conn, "❤️ Queen healed %s by 300 HP!\n", tower.Type)
+			network.SendPDU(conn, "event", fmt.Sprintf("❤️ Queen healed %s by 300 HP!", tower.Type))
 		}
 	}
 
-	// Deploy troop
 	player.Troops = append(player.Troops, *troop)
 	player.Mana -= troop.Mana
 
-	fmt.Fprintf(conn, "✅ %s deployed! Remaining mana: %d\n", troop.Name, player.Mana)
+	network.SendPDU(conn, "result", fmt.Sprintf("✅ %s deployed! Remaining mana: %d", troop.Name, player.Mana))
 }
+
+func showStatus(conn net.Conn, player *models.Player) {
+	status := map[string]interface{}{
+		"username": player.Username,
+		"level":    player.Level,
+		"exp":      player.EXP,
+		"mana":     player.Mana,
+		"towers":   player.Towers,
+		"troops":   player.Troops,
+	}
+	jsonData, _ := json.MarshalIndent(status, "", "  ")
+	network.SendPDU(conn, "status", string(jsonData))
+}
+
 func getLowestHPTower(towers []models.Tower) *models.Tower {
 	if len(towers) == 0 {
 		return nil
@@ -267,29 +221,14 @@ func getLowestHPTower(towers []models.Tower) *models.Tower {
 	}
 	return lowest
 }
-func showStatus(conn net.Conn, player *models.Player) {
-	fmt.Fprintf(conn, "\n🎖 Player: %s\n", player.Username)
-	fmt.Fprintf(conn, "Level: %d | EXP: %d | Mana: %d\n", player.Level, player.EXP, player.Mana)
 
-	fmt.Fprintln(conn, "🏰 Towers:")
-	if len(player.Towers) == 0 {
-		fmt.Fprintln(conn, "(no towers)")
-	} else {
-		for _, t := range player.Towers {
-			status := "✅"
-			if t.HP <= 0 {
-				status = "❌"
-			}
-			fmt.Fprintf(conn, "- %s: %d HP %s\n", t.Type, t.HP, status)
-		}
-	}
-
-	fmt.Fprintln(conn, "🪖 Troops:")
-	if len(player.Troops) == 0 {
-		fmt.Fprintln(conn, "(none)")
-	} else {
-		for i, troop := range player.Troops {
-			fmt.Fprintf(conn, " %d. %s (HP: %d, ATK: %d, DEF: %d)\n", i+1, troop.Name, troop.HP, troop.ATK, troop.DEF)
-		}
-	}
+func parseIndex(input string) int {
+	var idx int
+	fmt.Sscanf(input, "%d", &idx)
+	return idx
 }
+
+var (
+	troopList []models.Troop
+	loadOnce  sync.Once
+)

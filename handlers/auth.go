@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -11,17 +10,20 @@ import (
 	"sync"
 
 	"tcr_project/models"
+	"tcr_project/network"
 )
 
 var userDataFile = filepath.Join("data", "players.json")
 
 func Authenticate(conn net.Conn, players *map[string]*models.Player, mutex *sync.Mutex) *models.Player {
-	reader := bufio.NewReader(conn)
-
 	for {
-		fmt.Fprintln(conn, "📋 Do you want to (1) Register or (2) Login? Enter 1 or 2:")
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(choice)
+		network.SendPDU(conn, "menu", "📋 Do you want to (1) Register or (2) Login? Enter 1 or 2:")
+		pdu, err := network.ReadPDU(conn)
+		if err != nil {
+			fmt.Println("❌ Failed to read PDU:", err)
+			return nil
+		}
+		choice := strings.TrimSpace(pdu.Payload)
 
 		switch choice {
 		case "1":
@@ -35,26 +37,30 @@ func Authenticate(conn net.Conn, players *map[string]*models.Player, mutex *sync
 				return player
 			}
 		default:
-			fmt.Fprintln(conn, "❗ Invalid option. Please enter 1 or 2.")
+			network.SendPDU(conn, "error", "❗ Invalid option. Please enter 1 or 2.")
 		}
 	}
 }
 
 func register(conn net.Conn, players *map[string]*models.Player, mutex *sync.Mutex) *models.Player {
-	reader := bufio.NewReader(conn)
-	fmt.Fprintln(conn, "🆕 Enter a new username:")
-	username, _ := reader.ReadString('\n')
-	username = strings.TrimSpace(username)
-
-	fmt.Fprintln(conn, "🔒 Enter a password:")
-	password, _ := reader.ReadString('\n')
-	password = strings.TrimSpace(password)
+	network.SendPDU(conn, "input", "🆕 Enter a new username:")
+	usernamePDU, err := network.ReadPDU(conn)
+	if err != nil {
+		return nil
+	}
+	username := strings.TrimSpace(usernamePDU.Payload)
+	network.SendPDU(conn, "input", "🔒 Enter a password:")
+	passwordPDU, err := network.ReadPDU(conn)
+	if err != nil {
+		return nil
+	}
+	password := strings.TrimSpace(passwordPDU.Payload)
 
 	mutex.Lock()
 	defer mutex.Unlock()
 
 	if _, exists := (*players)[username]; exists {
-		fmt.Fprintln(conn, "❌ Username already exists.")
+		network.SendPDU(conn, "error", "❌ Username already exists.")
 		return nil
 	}
 
@@ -62,29 +68,32 @@ func register(conn net.Conn, players *map[string]*models.Player, mutex *sync.Mut
 	(*players)[username] = player
 	savePlayers(*players)
 
-	fmt.Fprintln(conn, "✅ Registration successful!")
+	network.SendPDU(conn, "success", "✅ Registration successful!")
 	return player
 }
 
 func login(conn net.Conn, players *map[string]*models.Player, mutex *sync.Mutex) *models.Player {
-	reader := bufio.NewReader(conn)
-	fmt.Fprintln(conn, "👤 Enter username:")
-	username, _ := reader.ReadString('\n')
-	username = strings.TrimSpace(username)
-
-	fmt.Fprintln(conn, "🔑 Enter password:")
-	password, _ := reader.ReadString('\n')
-	password = strings.TrimSpace(password)
-
+	network.SendPDU(conn, "input", "👤 Enter username:")
+	usernamePDU, err := network.ReadPDU(conn)
+	if err != nil {
+		return nil
+	}
+	username := strings.TrimSpace(usernamePDU.Payload)
+	network.SendPDU(conn, "input", "🔑 Enter password:")
+	passwordPDU, err := network.ReadPDU(conn)
+	if err != nil {
+		return nil
+	}
+	password := strings.TrimSpace(passwordPDU.Payload)
 	mutex.Lock()
 	defer mutex.Unlock()
 
 	if player, exists := (*players)[username]; exists && player.Password == password {
-		fmt.Fprintln(conn, "✅ Login successful!")
+		network.SendPDU(conn, "success", "✅ Login successful!")
 		return player
 	}
 
-	fmt.Fprintln(conn, "❌ Invalid username or password.")
+	network.SendPDU(conn, "error", "❌ Invalid username or password.")
 	return nil
 }
 
@@ -101,10 +110,10 @@ func savePlayers(players map[string]*models.Player) {
 		fmt.Printf("❌ Failed to encode player data: %v\n", err)
 	}
 }
+
 func LoadPlayers() (map[string]*models.Player, error) {
 	file, err := os.Open(userDataFile)
 	if err != nil {
-		// Nếu file chưa tồn tại, trả về map rỗng
 		if os.IsNotExist(err) {
 			return make(map[string]*models.Player), nil
 		}
