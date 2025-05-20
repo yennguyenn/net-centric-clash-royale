@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"tcr_project/models"
+	"tcr_project/internal/models"
 )
 
 func LoadTroopsFromFile(path string) ([]models.Troop, error) {

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"tcr_project/models"
+	"tcr_project/internal/models"
 )
 
 const (

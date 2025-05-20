@@ -6,9 +6,9 @@ import (
 	"net"
 	"sync"
 
-	"tcr_project/handlers"
-	"tcr_project/models"
-	"tcr_project/network"
+	"tcr_project/internal/handlers"
+	"tcr_project/internal/models"
+	"tcr_project/internal/network"
 )
 
 var (

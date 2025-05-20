@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"tcr_project/models"
-	"tcr_project/network"
-	"tcr_project/utils"
+	"tcr_project/internal/models"
+	"tcr_project/internal/network"
+	"tcr_project/internal/utils"
 )
 
 type GameSession struct {

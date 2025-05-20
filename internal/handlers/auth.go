@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"tcr_project/models"
-	"tcr_project/network"
+	"tcr_project/internal/models"
+	"tcr_project/internal/network"
 )
 
 var userDataFile = filepath.Join("data", "players.json")
