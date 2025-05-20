@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"tcr_project/internal/models"
+	"net-centric-clash-royale/internal/models"
 )
 
 const (

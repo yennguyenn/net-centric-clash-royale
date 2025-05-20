@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"tcr_project/internal/models"
-	"tcr_project/internal/network"
-	"tcr_project/internal/utils"
+	"net-centric-clash-royale/internal/models"
+	"net-centric-clash-royale/internal/network"
+	"net-centric-clash-royale/internal/utils"
 )
 
 type GameSession struct {

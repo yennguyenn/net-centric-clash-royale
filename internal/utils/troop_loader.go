@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"tcr_project/internal/models"
+	"net-centric-clash-royale/internal/models"
 )
 
 func LoadTroopsFromFile(path string) ([]models.Troop, error) {

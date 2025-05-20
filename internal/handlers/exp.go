@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"fmt"
-	"tcr_project/models"
+	"net-centric-clash-royale/internal/models"
 )
 
 func AddExp(player *models.Player, expGain int) {

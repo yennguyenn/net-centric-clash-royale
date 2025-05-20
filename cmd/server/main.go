@@ -6,9 +6,9 @@ import (
 	"net"
 	"sync"
 
-	"tcr_project/internal/handlers"
-	"tcr_project/internal/models"
-	"tcr_project/internal/network"
+	"net-centric-clash-royale/internal/handlers"
+	"net-centric-clash-royale/internal/models"
+	"net-centric-clash-royale/internal/network"
 )
 
 var (

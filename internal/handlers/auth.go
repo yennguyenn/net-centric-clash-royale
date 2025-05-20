@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"tcr_project/internal/models"
-	"tcr_project/internal/network"
+	"net-centric-clash-royale/internal/models"
+	"net-centric-clash-royale/internal/network"
 )
 
 var userDataFile = filepath.Join("data", "players.json")
