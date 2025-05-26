@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -51,8 +50,10 @@ func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
 		return
 	}
 
-	p1.Troops = append([]models.Troop{}, getRandomTroops(troops, 3)...)
-	p2.Troops = append([]models.Troop{}, getRandomTroops(troops, 3)...)
+	// p1.Troops = append([]models.Troop{}, getRandomTroops(troops, 3)...)
+	// p2.Troops = append([]models.Troop{}, getRandomTroops(troops, 3)...)
+	p1.Troops = getRandomTroops(troops, 3)
+	p2.Troops = getRandomTroops(troops, 3)
 
 	fmt.Printf("DEBUG: %s got %d troops\n", p1.Username, len(p1.Troops))
 	fmt.Printf("DEBUG: %s got %d troops\n", p2.Username, len(p2.Troops))
@@ -217,17 +218,18 @@ func getRandomTroops(all []models.Troop, count int) []models.Troop {
 	}
 	return selected
 }
-func LoadTroopsFromFile(path string) ([]models.Troop, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	var troops []models.Troop
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&troops); err != nil {
-		return nil, err
-	}
 
-	return troops, nil
-}
+// func LoadTroopsFromFile(path string) ([]models.Troop, error) {
+// 	file, err := os.Open(path)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer file.Close()
+// 	var troops []models.Troop
+// 	decoder := json.NewDecoder(file)
+// 	if err := decoder.Decode(&troops); err != nil {
+// 		return nil, err
+// 	}
+
+// 	return troops, nil
+// }
