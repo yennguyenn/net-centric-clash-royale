@@ -17,7 +17,7 @@ var userDataFile = filepath.Join("data", "players.json")
 
 func Authenticate(conn net.Conn, players *map[string]*models.Player, mutex *sync.Mutex) *models.Player {
 	for {
-		network.SendPDU(conn, "menu", "📋 Do you want to (1) Register or (2) Login? Enter 1 or 2:")
+		network.SendPDU(conn, "menu", "📋 Do you want to (1) Register or (2) Login?/n Enter 1 or 2:")
 		pdu, err := network.ReadPDU(conn)
 		if err != nil {
 			fmt.Println("❌ Failed to read PDU:", err)
@@ -64,7 +64,16 @@ func register(conn net.Conn, players *map[string]*models.Player, mutex *sync.Mut
 		return nil
 	}
 
-	player := models.NewPlayer(username, password)
+	player := &models.Player{
+		Username: username,
+		Password: password,
+	}
+
+	if err := InitNewPlayer(player); err != nil {
+		network.SendPDU(conn, "error", "❌ Failed to initialize player.")
+		return nil
+	}
+
 	(*players)[username] = player
 	savePlayers(*players)
 
