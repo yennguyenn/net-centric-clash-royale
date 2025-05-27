@@ -101,27 +101,11 @@ func (gs *GameSession) TakeTurn() {
 	}
 
 	if active.Mana >= 10 && len(active.Troops) < 3 {
-		fmt.Printf("DEBUG: %s is eligible for troop restore (Mana: %d, Troops: %d)\n", active.Username, active.Mana, len(active.Troops))
-
-		troops, err := utils.LoadTroopsFromFile("data/troop.json")
-		if err != nil {
-			fmt.Printf("❌ Failed to load troops for restore: %v\n", err)
-			return
-		}
-
-		if len(troops) == 0 {
-			fmt.Println("⚠️ No available troop data to restore")
-			return
-		}
-
+		troops, _ := utils.LoadTroopsFromFile("data/troop.json")
 		newTroop := getRandomTroops(troops, 1)[0]
 		active.Troops = append(active.Troops, newTroop)
-
-		fmt.Printf("DEBUG: %s restored troop %s (ATK: %d, DEF: %d, Mana: %d)\n",
-			active.Username, newTroop.Name, newTroop.ATK, newTroop.DEF, newTroop.Mana)
-
-		network.SendPDU(conn, "event", fmt.Sprintf("✨ New troop '%s' has joined your hand! (ATK: %d, DEF: %d, Mana: %d)",
-			newTroop.Name, newTroop.ATK, newTroop.DEF, newTroop.Mana))
+		fmt.Printf("DEBUG: %s restored troop %s\n", active.Username, newTroop.Name)
+		network.SendPDU(conn, "event", fmt.Sprintf("✨ %s is restored to your hand!", newTroop.Name))
 	}
 
 	if gs.TurnOwner == gs.Player1 {
@@ -204,54 +188,10 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.
 	}
 
 	tower := &defender.Towers[targetIndex]
-	// damage := utils.CalculateDamage(troop.ATK, tower.DEF, tower.CRIT)
-	// tower.HP -= damage
-	// attacker.Mana -= troop.Mana
-	// attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
-
-	// network.SendPDU(conn, "result", fmt.Sprintf("💥 %s dealt %d damage to %s", troop.Name, damage, tower.Type))
-
-	// if tower.HP <= 0 {
-	// 	network.SendPDU(conn, "event", fmt.Sprintf("🏰 %s destroyed!", tower.Type))
-	// 	if tower.Type == "King Tower" {
-	// 		gs.GameOver = true
-	// 		gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying the King Tower!", attacker.Username))
-	// 		AddExp(attacker, 30)
-	// 		AddExp(defender, 10)
-	// 	}
-	// }
-	attacker.Mana -= troop.Mana
-	attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
-
-	if troop.Name == "Queen" {
-		// Heal: tìm tower HP thấp nhất của chính attacker (trừ King Tower)
-		var towerToHeal *models.Tower
-		minHP := 10000
-		for i := range attacker.Towers {
-			t := &attacker.Towers[i]
-			if t.Type == "Guard Tower" && t.HP > 0 && t.HP < minHP {
-				towerToHeal = t
-				minHP = t.HP
-			}
-		}
-		if towerToHeal != nil {
-			healAmount := 200
-			towerToHeal.HP += healAmount
-			if towerToHeal.HP > 1000 {
-				towerToHeal.HP = 1000
-			}
-
-			network.SendPDU(conn, "result", fmt.Sprintf("💖 Queen healed your %s by %d HP! New HP: %d", towerToHeal.Type, healAmount, towerToHeal.HP))
-		} else {
-			network.SendPDU(conn, "event", "⚠️ No Guard Tower available to heal.")
-		}
-
-		return
-	}
-
-	// Nếu không phải Queen, thực hiện tấn công như bình thường
 	damage := utils.CalculateDamage(troop.ATK, tower.DEF, tower.CRIT)
 	tower.HP -= damage
+	attacker.Mana -= troop.Mana
+	attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
 
 	network.SendPDU(conn, "result", fmt.Sprintf("💥 %s dealt %d damage to %s", troop.Name, damage, tower.Type))
 
@@ -299,228 +239,17 @@ func getRandomTroops(all []models.Troop, count int) []models.Troop {
 	return selected
 }
 
-func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.Conn) {
-	if len(attacker.Troops) == 0 {
-		network.SendPDU(conn, "error", "❌ You have no troops to attack with.")
-		return
-	}
-
-	troopIndex := selectTroop(conn, attacker)
-	if troopIndex == -1 {
-		return
-	}
-
-	troop := attacker.Troops[troopIndex]
-	if attacker.Mana < troop.Mana {
-		network.SendPDU(conn, "error", fmt.Sprintf("❌ Not enough mana. You have %d, need %d. Turn skipped.", attacker.Mana, troop.Mana))
-		return
-	}
-
-	// === Enforce 1st Guard Tower Rule ===
-	var availableTargets []int
-	guard1Alive := defender.Towers[0].HP > 0
-
-	for i, tower := range defender.Towers {
-		if tower.HP <= 0 {
-			continue
-		}
-		if i > 0 && guard1Alive {
-			continue // block King Tower and Guard 2 if Guard 1 is alive
-		}
-		availableTargets = append(availableTargets, i)
-	}
-
-	if len(availableTargets) == 0 {
-		network.SendPDU(conn, "error", "❌ No valid towers to attack.")
-		return
-	}
-
-	targetIndex := selectTower(conn, defender, availableTargets)
-	if targetIndex == -1 {
-		return
-	}
-
-	tower := &defender.Towers[targetIndex]
-	damage := utils.CalculateDamage(troop.ATK, tower.DEF, tower.CRIT)
-	tower.HP -= damage
-	attacker.Mana -= troop.Mana
-	attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
-
-	network.SendPDU(conn, "result", fmt.Sprintf("💥 %s dealt %d damage to %s", troop.Name, damage, tower.Type))
-
-	if tower.HP <= 0 {
-		network.SendPDU(conn, "event", fmt.Sprintf("🏰 %s destroyed!", tower.Type))
-
-		// ✅ Continue attacking if troop survives and other towers exist
-		if tower.Type != "King Tower" {
-			network.SendPDU(conn, "event", "⚔️ Your troop can attack again!")
-			gs.HandleAttack(attacker, defender, conn)
-			return
-		}
-
-		gs.GameOver = true
-		gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying the King Tower!", attacker.Username))
-		AddExp(attacker, 30)
-		AddExp(defender, 10)
-	}
-}
-
-func selectTroop(conn net.Conn, attacker *models.Player) int {
-	troopList := "Choose a troop to attack with:\n"
-	for i, t := range attacker.Troops {
-		troopList += fmt.Sprintf("%d. %s (ATK: %d, DEF: %d, Mana: %d)\n", i+1, t.Name, t.ATK, t.DEF, t.Mana)
-	}
-	network.SendPDU(conn, "select", troopList)
-	pdu, err := network.ReadPDU(conn)
-	if err != nil {
-		return -1
-	}
-	idx := parseIndex(pdu.Payload) - 1
-	if idx < 0 || idx >= len(attacker.Troops) {
-		network.SendPDU(conn, "error", "❌ Invalid troop selection.")
-		return -1
-	}
-	return idx
-}
-
-func selectTower(conn net.Conn, defender *models.Player, valid []int) int {
-	msg := "Choose tower to attack:\n"
-	for _, i := range valid {
-		t := defender.Towers[i]
-		msg += fmt.Sprintf("%d. %s (HP: %d)\n", i+1, t.Type, t.HP)
-	}
-	network.SendPDU(conn, "select", msg)
-	pdu, err := network.ReadPDU(conn)
-	if err != nil {
-		return -1
-	}
-	idx := parseIndex(pdu.Payload) - 1
-	for _, v := range valid {
-		if idx == v {
-			return idx
-		}
-	}
-	network.SendPDU(conn, "error", "❌ Invalid tower selection.")
-	return -1
-}
-
-// /////////////////////////////
-func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.Conn) {
-	if len(attacker.Troops) == 0 {
-		network.SendPDU(conn, "error", "❌ You have no troops to attack with.")
-		return
-	}
-
-	troopIndex := selectTroop(conn, attacker)
-	if troopIndex == -1 {
-		return
-	}
-
-	troop := attacker.Troops[troopIndex]
-	if attacker.Mana < troop.Mana {
-		network.SendPDU(conn, "error", fmt.Sprintf("❌ Not enough mana. You have %d, need %d. Turn skipped.", attacker.Mana, troop.Mana))
-		return
-	}
-
-	// === Enforce 1st Guard Tower Rule ===
-	var availableTargets []int
-	guard1Alive := defender.Towers[0].HP > 0
-
-	for i, tower := range defender.Towers {
-		if tower.HP <= 0 {
-			continue
-		}
-		if i > 0 && guard1Alive {
-			continue // block King Tower and Guard 2 if Guard 1 is alive
-		}
-		availableTargets = append(availableTargets, i)
-	}
-
-	if len(availableTargets) == 0 {
-		network.SendPDU(conn, "error", "❌ No valid towers to attack.")
-		return
-	}
-
-	targetIndex := selectTower(conn, defender, availableTargets)
-	if targetIndex == -1 {
-		return
-	}
-
-	tower := &defender.Towers[targetIndex]
-	damage := utils.CalculateDamage(troop.ATK, tower.DEF, tower.CRIT)
-	tower.HP -= damage
-	attacker.Mana -= troop.Mana
-	attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
-
-	network.SendPDU(conn, "result", fmt.Sprintf("💥 %s dealt %d damage to %s", troop.Name, damage, tower.Type))
-
-	if tower.HP <= 0 {
-		network.SendPDU(conn, "event", fmt.Sprintf("🏰 %s destroyed!", tower.Type))
-
-		// ✅ Continue attacking if troop survives and other towers exist
-		if tower.Type != "King Tower" {
-			network.SendPDU(conn, "event", "⚔️ Your troop can attack again!")
-			gs.HandleAttack(attacker, defender, conn)
-			return
-		}
-
-		gs.GameOver = true
-		gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying the King Tower!", attacker.Username))
-		AddExp(attacker, 30)
-		AddExp(defender, 10)
-	}
-}
-
-func selectTroop(conn net.Conn, attacker *models.Player) int {
-	troopList := "Choose a troop to attack with:\n"
-	for i, t := range attacker.Troops {
-		troopList += fmt.Sprintf("%d. %s (ATK: %d, DEF: %d, Mana: %d)\n", i+1, t.Name, t.ATK, t.DEF, t.Mana)
-	}
-	network.SendPDU(conn, "select", troopList)
-	pdu, err := network.ReadPDU(conn)
-	if err != nil {
-		return -1
-	}
-	idx := parseIndex(pdu.Payload) - 1
-	if idx < 0 || idx >= len(attacker.Troops) {
-		network.SendPDU(conn, "error", "❌ Invalid troop selection.")
-		return -1
-	}
-	return idx
-}
-
-func selectTower(conn net.Conn, defender *models.Player, valid []int) int {
-	msg := "Choose tower to attack:\n"
-	for _, i := range valid {
-		t := defender.Towers[i]
-		msg += fmt.Sprintf("%d. %s (HP: %d)\n", i+1, t.Type, t.HP)
-	}
-	network.SendPDU(conn, "select", msg)
-	pdu, err := network.ReadPDU(conn)
-	if err != nil {
-		return -1
-	}
-	idx := parseIndex(pdu.Payload) - 1
-	for _, v := range valid {
-		if idx == v {
-			return idx
-		}
-	}
-	network.SendPDU(conn, "error", "❌ Invalid tower selection.")
-	return -1
-}
-
 // func LoadTroopsFromFile(path string) ([]models.Troop, error) {
-// 	file, err := os.Open(path)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	defer file.Close()
-// 	var troops []models.Troop
-// 	decoder := json.NewDecoder(file)
-// 	if err := decoder.Decode(&troops); err != nil {
-// 		return nil, err
-// 	}
+//  file, err := os.Open(path)
+//  if err != nil {
+//      return nil, err
+//  }
+//  defer file.Close()
+//  var troops []models.Troop
+//  decoder := json.NewDecoder(file)
+//  if err := decoder.Decode(&troops); err != nil {
+//      return nil, err
+//  }
 
-// 	return troops, nil
+//  return troops, nil
 // }
