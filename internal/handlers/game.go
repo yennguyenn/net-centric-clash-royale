@@ -126,7 +126,7 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.
 		network.SendPDU(conn, "error", "❌ You have no troops to attack with.")
 		return
 	}
-
+	// Select troop
 	troopList := "Choose a troop to attack with:\n"
 	for i, t := range attacker.Troops {
 		troopList += fmt.Sprintf("%d. %s (ATK: %d, DEF: %d, Mana: %d)\n", i+1, t.Name, t.ATK, t.DEF, t.Mana)
@@ -149,11 +149,31 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.
 		return
 	}
 
-	targetList := "Choose tower to attack:\n"
-	for i, t := range defender.Towers {
-		if t.Type != "King Tower" || (defender.Towers[0].HP <= 0 && defender.Towers[1].HP <= 0) {
-			targetList += fmt.Sprintf("%d. %s (HP: %d)\n", i+1, t.Type, t.HP)
+	// Determine if King Tower is allowed to be attacked
+	guardsDown := true
+	for _, t := range defender.Towers {
+		if t.Type == "Guard Tower" && t.HP > 0 {
+			guardsDown = false
+			break
 		}
+	}
+
+	targetList := "Choose tower to attack:\n"
+	validIndices := []int{}
+	for i, t := range defender.Towers {
+		if t.HP <= 0 {
+			continue
+		}
+		if t.Type == "King Tower" && !guardsDown {
+			continue
+		}
+		targetList += fmt.Sprintf("%d. %s (HP: %d)\n", i+1, t.Type, t.HP)
+		validIndices = append(validIndices, i)
+	}
+
+	if len(validIndices) == 0 {
+		network.SendPDU(conn, "error", "❌ No valid towers to attack.")
+		return
 	}
 
 	network.SendPDU(conn, "select", targetList)
