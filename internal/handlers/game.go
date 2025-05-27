@@ -101,7 +101,7 @@ func (gs *GameSession) TakeTurn() {
 	}
 
 	if active.Mana >= 10 && len(active.Troops) < 3 {
-		troops, _ := utils.LoadTroopsFromFile("data/troops.json")
+		troops, _ := utils.LoadTroopsFromFile("data/troop.json")
 		newTroop := getRandomTroops(troops, 1)[0]
 		active.Troops = append(active.Troops, newTroop)
 		fmt.Printf("DEBUG: %s restored troop %s\n", active.Username, newTroop.Name)
