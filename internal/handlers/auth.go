@@ -11,13 +11,14 @@ import (
 
 	"net-centric-clash-royale/internal/models"
 	"net-centric-clash-royale/internal/network"
+	"net-centric-clash-royale/internal/utils"
 )
 
 var userDataFile = filepath.Join("data", "players.json")
 
 func Authenticate(conn net.Conn, players *map[string]*models.Player, mutex *sync.Mutex) *models.Player {
 	for {
-		network.SendPDU(conn, "menu", "📋 Do you want to (1) Register or (2) Login?/n Enter 1 or 2:")
+		network.SendPDU(conn, "menu", "📋 Do you want to (1) Register or (2) Login? Enter 1 or 2:")
 		pdu, err := network.ReadPDU(conn)
 		if err != nil {
 			fmt.Println("❌ Failed to read PDU:", err)
@@ -88,16 +89,33 @@ func login(conn net.Conn, players *map[string]*models.Player, mutex *sync.Mutex)
 		return nil
 	}
 	username := strings.TrimSpace(usernamePDU.Payload)
+
 	network.SendPDU(conn, "input", "🔑 Enter password:")
 	passwordPDU, err := network.ReadPDU(conn)
 	if err != nil {
 		return nil
 	}
 	password := strings.TrimSpace(passwordPDU.Payload)
+
 	mutex.Lock()
 	defer mutex.Unlock()
 
 	if player, exists := (*players)[username]; exists && player.Password == password {
+		// Kiểm tra nếu chưa có towers thì nạp từ file
+		if len(player.Towers) == 0 {
+			towers, err := utils.LoadPlayerTowers()
+			if err != nil {
+				network.SendPDU(conn, "error", "❌ Failed to load towers.")
+				return nil
+			}
+			player.Towers = towers
+		}
+
+		// Nếu chưa có troops thì khởi tạo rỗng
+		if player.Troops == nil {
+			player.Troops = []models.Troop{}
+		}
+
 		network.SendPDU(conn, "success", "✅ Login successful!")
 		return player
 	}
