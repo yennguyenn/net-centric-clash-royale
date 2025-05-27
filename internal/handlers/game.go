@@ -101,11 +101,27 @@ func (gs *GameSession) TakeTurn() {
 	}
 
 	if active.Mana >= 10 && len(active.Troops) < 3 {
-		troops, _ := utils.LoadTroopsFromFile("data/troop.json")
+		fmt.Printf("DEBUG: %s is eligible for troop restore (Mana: %d, Troops: %d)\n", active.Username, active.Mana, len(active.Troops))
+
+		troops, err := utils.LoadTroopsFromFile("data/troop.json")
+		if err != nil {
+			fmt.Printf("❌ Failed to load troops for restore: %v\n", err)
+			return
+		}
+
+		if len(troops) == 0 {
+			fmt.Println("⚠️ No available troop data to restore")
+			return
+		}
+
 		newTroop := getRandomTroops(troops, 1)[0]
 		active.Troops = append(active.Troops, newTroop)
-		fmt.Printf("DEBUG: %s restored troop %s\n", active.Username, newTroop.Name)
-		network.SendPDU(conn, "event", fmt.Sprintf("✨ %s is restored to your hand!", newTroop.Name))
+
+		fmt.Printf("DEBUG: %s restored troop %s (ATK: %d, DEF: %d, Mana: %d)\n",
+			active.Username, newTroop.Name, newTroop.ATK, newTroop.DEF, newTroop.Mana)
+
+		network.SendPDU(conn, "event", fmt.Sprintf("✨ New troop '%s' has joined your hand! (ATK: %d, DEF: %d, Mana: %d)",
+			newTroop.Name, newTroop.ATK, newTroop.DEF, newTroop.Mana))
 	}
 
 	if gs.TurnOwner == gs.Player1 {
@@ -188,10 +204,54 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.
 	}
 
 	tower := &defender.Towers[targetIndex]
-	damage := utils.CalculateDamage(troop.ATK, tower.DEF, tower.CRIT)
-	tower.HP -= damage
+	// damage := utils.CalculateDamage(troop.ATK, tower.DEF, tower.CRIT)
+	// tower.HP -= damage
+	// attacker.Mana -= troop.Mana
+	// attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
+
+	// network.SendPDU(conn, "result", fmt.Sprintf("💥 %s dealt %d damage to %s", troop.Name, damage, tower.Type))
+
+	// if tower.HP <= 0 {
+	// 	network.SendPDU(conn, "event", fmt.Sprintf("🏰 %s destroyed!", tower.Type))
+	// 	if tower.Type == "King Tower" {
+	// 		gs.GameOver = true
+	// 		gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying the King Tower!", attacker.Username))
+	// 		AddExp(attacker, 30)
+	// 		AddExp(defender, 10)
+	// 	}
+	// }
 	attacker.Mana -= troop.Mana
 	attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
+
+	if troop.Name == "Queen" {
+		// Heal: tìm tower HP thấp nhất của chính attacker (trừ King Tower)
+		var towerToHeal *models.Tower
+		minHP := 10000
+		for i := range attacker.Towers {
+			t := &attacker.Towers[i]
+			if t.Type == "Guard Tower" && t.HP > 0 && t.HP < minHP {
+				towerToHeal = t
+				minHP = t.HP
+			}
+		}
+		if towerToHeal != nil {
+			healAmount := 200
+			towerToHeal.HP += healAmount
+			if towerToHeal.HP > 1000 {
+				towerToHeal.HP = 1000
+			}
+
+			network.SendPDU(conn, "result", fmt.Sprintf("💖 Queen healed your %s by %d HP! New HP: %d", towerToHeal.Type, healAmount, towerToHeal.HP))
+		} else {
+			network.SendPDU(conn, "event", "⚠️ No Guard Tower available to heal.")
+		}
+
+		return
+	}
+
+	// Nếu không phải Queen, thực hiện tấn công như bình thường
+	damage := utils.CalculateDamage(troop.ATK, tower.DEF, tower.CRIT)
+	tower.HP -= damage
 
 	network.SendPDU(conn, "result", fmt.Sprintf("💥 %s dealt %d damage to %s", troop.Name, damage, tower.Type))
 
