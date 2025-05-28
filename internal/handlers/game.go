@@ -22,6 +22,7 @@ type GameSession struct {
 	GameOver  bool
 	TurnOwner *models.Player
 	Mutex     *sync.Mutex
+	GameTimer *GameTimer // Add GameTimer to the session
 }
 
 func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
@@ -33,6 +34,7 @@ func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
 		GameOver:  false,
 		TurnOwner: p1,
 		Mutex:     &sync.Mutex{},
+		GameTimer: NewGameTimer(), // Initialize the game timer
 	}
 
 	troops, err := utils.LoadTroopsFromFile("data/troop.json")
@@ -42,7 +44,6 @@ func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
 		network.SendPDU(conn2, "error", "❌ Server error: cannot load troop data.")
 		return
 	}
-
 	if len(troops) < 3 {
 		fmt.Printf("⚠️ Not enough troops in data file. Only %d troops found\n", len(troops))
 		network.SendPDU(conn1, "error", "⚠️ Not enough troop data on server.")
@@ -50,8 +51,6 @@ func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
 		return
 	}
 
-	// p1.Troops = append([]models.Troop{}, getRandomTroops(troops, 3)...)
-	// p2.Troops = append([]models.Troop{}, getRandomTroops(troops, 3)...)
 	p1.Troops = getRandomTroops(troops, 3)
 	p2.Troops = getRandomTroops(troops, 3)
 
@@ -59,7 +58,30 @@ func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
 	fmt.Printf("DEBUG: %s got %d troops\n", p2.Username, len(p2.Troops))
 
 	session.Broadcast("🔥 Match found! " + p1.Username + " vs " + p2.Username)
-	session.Broadcast("🎯 " + p1.Username + " will go first!")
+	session.Broadcast("� " + p1.Username + " will go first!")
+
+	session.GameTimer.Start() // Start the game timer
+
+	// Goroutine to check for game end by time
+	go func() {
+		ticker := time.NewTicker(1 * time.Second) // Check every second for more precise time-out
+		defer ticker.Stop()
+		for range ticker.C {
+			if session.GameOver {
+				return // Game already over, stop checking
+			}
+
+			if session.GameTimer.IsTimeUp() {
+				session.Mutex.Lock()
+				if !session.GameOver { // Double check to avoid race condition
+					session.GameOver = true
+					session.endGameByTime() // Determine winner by destroyed towers
+				}
+				session.Mutex.Unlock()
+				return
+			}
+		}
+	}()
 
 	for !session.GameOver {
 		session.TakeTurn()
@@ -67,9 +89,19 @@ func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
 }
 
 func (gs *GameSession) TakeTurn() {
+	// Check if game is already over by time before taking turn
+	if gs.GameTimer.IsTimeUp() && !gs.GameOver {
+		gs.Mutex.Lock()
+		if !gs.GameOver { // Double check
+			gs.GameOver = true
+			gs.endGameByTime()
+		}
+		gs.Mutex.Unlock()
+		return
+	}
+
 	var conn net.Conn
 	var active, opponent *models.Player
-
 	if gs.TurnOwner == gs.Player1 {
 		conn = gs.Conn1
 		active = gs.Player1
@@ -82,11 +114,18 @@ func (gs *GameSession) TakeTurn() {
 
 	fmt.Printf("DEBUG: %s has %d troops at start of turn\n", active.Username, len(active.Troops))
 
-	menu := "🎯 Your turn, " + active.Username + "\n1. Attack Tower\n2. Show Status"
+	// Include remaining time in the menu message
+	menu := fmt.Sprintf("🎯 Your turn, %s (Time Left: %s)\n1. Attack Tower\n2. Show Status",
+		active.Username, gs.GameTimer.FormattedTimeRemaining())
 	network.SendPDU(conn, "menu", menu)
 
 	pdu, err := network.ReadPDU(conn)
 	if err != nil {
+		// Handle connection error, possibly set GameOver
+		gs.Mutex.Lock()
+		gs.GameOver = true
+		gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", active.Username, opponent.Username))
+		gs.Mutex.Unlock()
 		return
 	}
 	choice := strings.TrimSpace(pdu.Payload)
@@ -108,10 +147,13 @@ func (gs *GameSession) TakeTurn() {
 		network.SendPDU(conn, "event", fmt.Sprintf("✨ %s is restored to your hand!", newTroop.Name))
 	}
 
-	if gs.TurnOwner == gs.Player1 {
-		gs.TurnOwner = gs.Player2
-	} else {
-		gs.TurnOwner = gs.Player1
+	// Only switch turn if game is not over
+	if !gs.GameOver {
+		if gs.TurnOwner == gs.Player1 {
+			gs.TurnOwner = gs.Player2
+		} else {
+			gs.TurnOwner = gs.Player1
+		}
 	}
 }
 
@@ -120,8 +162,10 @@ func (gs *GameSession) Broadcast(msg string) {
 	network.SendPDU(gs.Conn2, "broadcast", msg)
 }
 
-func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.Conn) {
-	fmt.Printf("DEBUG: %s troop count before attack: %d\n", attacker.Username, len(attacker.Troops))
+func (gs *GameSession) HandleAttack(attacker, defender *models.Player,
+	conn net.Conn) {
+	fmt.Printf("DEBUG: %s troop count before attack: %d\n",
+		attacker.Username, len(attacker.Troops))
 	if len(attacker.Troops) == 0 {
 		network.SendPDU(conn, "error", "❌ You have no troops to attack with.")
 		return
@@ -132,9 +176,13 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.
 		troopList += fmt.Sprintf("%d. %s (ATK: %d, DEF: %d, Mana: %d)\n", i+1, t.Name, t.ATK, t.DEF, t.Mana)
 	}
 	network.SendPDU(conn, "select", troopList)
-
 	pdu, err := network.ReadPDU(conn)
 	if err != nil {
+		// Handle connection error
+		gs.Mutex.Lock()
+		gs.GameOver = true
+		gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", attacker.Username, defender.Username))
+		gs.Mutex.Unlock()
 		return
 	}
 	troopIndex := parseIndex(pdu.Payload) - 1
@@ -142,7 +190,6 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.
 		network.SendPDU(conn, "error", "❌ Invalid troop selection.")
 		return
 	}
-
 	troop := attacker.Troops[troopIndex]
 	if attacker.Mana < troop.Mana {
 		network.SendPDU(conn, "error", fmt.Sprintf("❌ Not enough mana. You have %d, need %d. Turn skipped.", attacker.Mana, troop.Mana))
@@ -157,7 +204,6 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.
 			break
 		}
 	}
-
 	targetList := "Choose tower to attack:\n"
 	validIndices := []int{}
 	for i, t := range defender.Towers {
@@ -170,15 +216,18 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.
 		targetList += fmt.Sprintf("%d. %s (HP: %d)\n", i+1, t.Type, t.HP)
 		validIndices = append(validIndices, i)
 	}
-
 	if len(validIndices) == 0 {
 		network.SendPDU(conn, "error", "❌ No valid towers to attack.")
 		return
 	}
-
 	network.SendPDU(conn, "select", targetList)
 	pdu, err = network.ReadPDU(conn)
 	if err != nil {
+		// Handle connection error
+		gs.Mutex.Lock()
+		gs.GameOver = true
+		gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", attacker.Username, defender.Username))
+		gs.Mutex.Unlock()
 		return
 	}
 	targetIndex := parseIndex(pdu.Payload) - 1
@@ -186,10 +235,10 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.
 		network.SendPDU(conn, "error", "❌ Invalid tower selection.")
 		return
 	}
-
 	tower := &defender.Towers[targetIndex]
 	damage := utils.CalculateDamage(troop.ATK, tower.DEF, tower.CRIT)
 	tower.HP -= damage
+
 	attacker.Mana -= troop.Mana
 	attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
 
@@ -198,12 +247,54 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player, conn net.
 	if tower.HP <= 0 {
 		network.SendPDU(conn, "event", fmt.Sprintf("🏰 %s destroyed!", tower.Type))
 		if tower.Type == "King Tower" {
-			gs.GameOver = true
-			gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying the King Tower!", attacker.Username))
-			AddExp(attacker, 30)
-			AddExp(defender, 10)
+			gs.Mutex.Lock() // Lock before modifying GameOver
+			if !gs.GameOver {
+				gs.GameOver = true
+				gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying the King Tower!", attacker.Username))
+				AddExp(attacker, 30)
+				AddExp(defender, 10)
+			}
+			gs.Mutex.Unlock()
 		}
 	}
+}
+
+// endGameByTime determines the winner when the game timer runs out.
+// Winner is the player who destroyed more opponent towers.
+func (gs *GameSession) endGameByTime() {
+	// Count destroyed towers for each player
+	p1DestroyedTowers := countDestroyedTowers(gs.Player2) // Player1 destroyed Player2's towers
+	p2DestroyedTowers := countDestroyedTowers(gs.Player1) // Player2 destroyed Player1's towers
+
+	gs.Broadcast("⏰ Time is up! Calculating results...")
+
+	if p1DestroyedTowers > p2DestroyedTowers {
+		gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying more towers (%d vs %d)!", gs.Player1.Username, p1DestroyedTowers, p2DestroyedTowers))
+		AddExp(gs.Player1, 20)
+		AddExp(gs.Player2, 5)
+	} else if p2DestroyedTowers > p1DestroyedTowers {
+		gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying more towers (%d vs %d)!", gs.Player2.Username, p2DestroyedTowers, p1DestroyedTowers))
+		AddExp(gs.Player2, 20)
+		AddExp(gs.Player1, 5)
+	} else {
+		gs.Broadcast("🤝 It's a draw! Both players destroyed the same number of towers.")
+		AddExp(gs.Player1, 10)
+		AddExp(gs.Player2, 10)
+	}
+	// Close connections after game ends
+	gs.Conn1.Close()
+	gs.Conn2.Close()
+}
+
+// countDestroyedTowers counts the number of towers with HP <= 0 for a given player.
+func countDestroyedTowers(player *models.Player) int {
+	count := 0
+	for _, t := range player.Towers {
+		if t.HP <= 0 { // Tower is considered destroyed if HP is 0 or less
+			count++
+		}
+	}
+	return count
 }
 
 func showStatus(conn net.Conn, player *models.Player) {
@@ -215,7 +306,7 @@ func showStatus(conn net.Conn, player *models.Player) {
 		"towers":   player.Towers,
 		"troops":   player.Troops,
 	}
-	jsonData, _ := json.MarshalIndent(status, "", "  ")
+	jsonData, _ := json.MarshalIndent(status, "", " ")
 	network.SendPDU(conn, "status", string(jsonData))
 }
 
@@ -238,18 +329,3 @@ func getRandomTroops(all []models.Troop, count int) []models.Troop {
 	}
 	return selected
 }
-
-// func LoadTroopsFromFile(path string) ([]models.Troop, error) {
-//  file, err := os.Open(path)
-//  if err != nil {
-//      return nil, err
-//  }
-//  defer file.Close()
-//  var troops []models.Troop
-//  decoder := json.NewDecoder(file)
-//  if err := decoder.Decode(&troops); err != nil {
-//      return nil, err
-//  }
-
-//  return troops, nil
-// }
