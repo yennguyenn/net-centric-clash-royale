@@ -15,26 +15,31 @@ import (
 )
 
 type GameSession struct {
-	Player1   *models.Player
-	Player2   *models.Player
-	Conn1     net.Conn
-	Conn2     net.Conn
-	GameOver  bool
-	TurnOwner *models.Player
-	Mutex     *sync.Mutex
-	GameTimer *GameTimer // Add GameTimer to the session
+	Player1      *models.Player
+	Player2      *models.Player
+	Conn1        net.Conn
+	Conn2        net.Conn
+	GameOver     bool
+	TurnOwner    *models.Player
+	Mutex        *sync.Mutex
+	GameTimer    *GameTimer // Add GameTimer to the session
+	IsTimedGame  bool       // New field to indicate if the game is timed
+	gameOverChan chan bool  // Channel to signal game completion to the caller
 }
 
-func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
+// StartGameSession now accepts an isTimedGame boolean and returns a channel
+// that will be closed or sent a signal when the game is over.
+func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn, isTimedGame bool) chan bool {
 	session := &GameSession{
-		Player1:   p1,
-		Player2:   p2,
-		Conn1:     conn1,
-		Conn2:     conn2,
-		GameOver:  false,
-		TurnOwner: p1,
-		Mutex:     &sync.Mutex{},
-		GameTimer: NewGameTimer(), // Initialize the game timer
+		Player1:      p1,
+		Player2:      p2,
+		Conn1:        conn1,
+		Conn2:        conn2,
+		GameOver:     false,
+		TurnOwner:    p1,
+		Mutex:        &sync.Mutex{},
+		IsTimedGame:  isTimedGame,     // Set the game mode
+		gameOverChan: make(chan bool), // Initialize the game over channel
 	}
 
 	troops, err := utils.LoadTroopsFromFile("data/troop.json")
@@ -42,13 +47,15 @@ func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
 		fmt.Printf("❌ Failed to load troops.json: %v\n", err)
 		network.SendPDU(conn1, "error", "❌ Server error: cannot load troop data.")
 		network.SendPDU(conn2, "error", "❌ Server error: cannot load troop data.")
-		return
+		close(session.gameOverChan) // Signal immediate game over
+		return session.gameOverChan
 	}
 	if len(troops) < 3 {
 		fmt.Printf("⚠️ Not enough troops in data file. Only %d troops found\n", len(troops))
 		network.SendPDU(conn1, "error", "⚠️ Not enough troop data on server.")
 		network.SendPDU(conn2, "error", "⚠️ Not enough troop data on server.")
-		return
+		close(session.gameOverChan) // Signal immediate game over
+		return session.gameOverChan
 	}
 
 	p1.Troops = getRandomTroops(troops, 3)
@@ -58,43 +65,63 @@ func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn) {
 	fmt.Printf("DEBUG: %s got %d troops\n", p2.Username, len(p2.Troops))
 
 	session.Broadcast("🔥 Match found! " + p1.Username + " vs " + p2.Username)
-	session.Broadcast("� " + p1.Username + " will go first!")
+	session.Broadcast("🎯 " + p1.Username + " will go first!")
 
-	session.GameTimer.Start() // Start the game timer
+	if session.IsTimedGame {
+		session.GameTimer = NewGameTimer() // Initialize the game timer only if timed
+		session.GameTimer.Start()          // Start the game timer
 
-	// Goroutine to check for game end by time
-	go func() {
-		ticker := time.NewTicker(1 * time.Second) // Check every second for more precise time-out
-		defer ticker.Stop()
-		for range ticker.C {
-			if session.GameOver {
-				return // Game already over, stop checking
-			}
-
-			if session.GameTimer.IsTimeUp() {
-				session.Mutex.Lock()
-				if !session.GameOver { // Double check to avoid race condition
-					session.GameOver = true
-					session.endGameByTime() // Determine winner by destroyed towers
+		// Goroutine to check for game end by time
+		go func() {
+			ticker := time.NewTicker(1 * time.Second) // Check every second for more precise time-out
+			defer ticker.Stop()
+			for range ticker.C {
+				if session.GameOver {
+					return // Game already over, stop checking
 				}
-				session.Mutex.Unlock()
-				return
+
+				if session.GameTimer.IsTimeUp() {
+					session.Mutex.Lock()
+					if !session.GameOver { // Double check to avoid race condition
+						session.GameOver = true
+						session.endGameByTime()     // Determine winner by destroyed towers
+						close(session.gameOverChan) // Signal game over
+					}
+					session.Mutex.Unlock()
+					return
+				}
 			}
+		}()
+	} else {
+		session.Broadcast("This is an untimed game.")
+	}
+
+	// Main game loop in a goroutine so StartGameSession can return
+	go func() {
+		defer func() {
+			// Ensure gameOverChan is closed if the game loop exits for any reason
+			// other than explicit closure (e.g., King Tower destroyed).
+			if !session.GameOver {
+				close(session.gameOverChan)
+			}
+		}()
+
+		for !session.GameOver {
+			session.TakeTurn()
 		}
 	}()
 
-	for !session.GameOver {
-		session.TakeTurn()
-	}
+	return session.gameOverChan // Return the channel immediately
 }
 
 func (gs *GameSession) TakeTurn() {
-	// Check if game is already over by time before taking turn
-	if gs.GameTimer.IsTimeUp() && !gs.GameOver {
+	// Check if game is already over by time before taking turn (only for timed games)
+	if gs.IsTimedGame && gs.GameTimer.IsTimeUp() && !gs.GameOver {
 		gs.Mutex.Lock()
 		if !gs.GameOver { // Double check
 			gs.GameOver = true
 			gs.endGameByTime()
+			close(gs.gameOverChan) // Signal game over
 		}
 		gs.Mutex.Unlock()
 		return
@@ -114,17 +141,23 @@ func (gs *GameSession) TakeTurn() {
 
 	fmt.Printf("DEBUG: %s has %d troops at start of turn\n", active.Username, len(active.Troops))
 
-	// Include remaining time in the menu message
-	menu := fmt.Sprintf("🎯 Your turn, %s (Time Left: %s)\n1. Attack Tower\n2. Show Status",
-		active.Username, gs.GameTimer.FormattedTimeRemaining())
+	// Include remaining time in the menu message only if it's a timed game
+	menu := fmt.Sprintf("🎯 Your turn, %s", active.Username)
+	if gs.IsTimedGame {
+		menu += fmt.Sprintf(" (Time Left: %s)", gs.GameTimer.FormattedTimeRemaining())
+	}
+	menu += "\n1. Attack Tower\n2. Show Status"
 	network.SendPDU(conn, "menu", menu)
 
 	pdu, err := network.ReadPDU(conn)
 	if err != nil {
-		// Handle connection error, possibly set GameOver
+		// Handle connection error, set GameOver and signal
 		gs.Mutex.Lock()
-		gs.GameOver = true
-		gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", active.Username, opponent.Username))
+		if !gs.GameOver {
+			gs.GameOver = true
+			gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", active.Username, opponent.Username))
+			close(gs.gameOverChan) // Signal game over
+		}
 		gs.Mutex.Unlock()
 		return
 	}
@@ -178,10 +211,13 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player,
 	network.SendPDU(conn, "select", troopList)
 	pdu, err := network.ReadPDU(conn)
 	if err != nil {
-		// Handle connection error
+		// Handle connection error, set GameOver and signal
 		gs.Mutex.Lock()
-		gs.GameOver = true
-		gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", attacker.Username, defender.Username))
+		if !gs.GameOver {
+			gs.GameOver = true
+			gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", attacker.Username, defender.Username))
+			close(gs.gameOverChan) // Signal game over
+		}
 		gs.Mutex.Unlock()
 		return
 	}
@@ -223,10 +259,13 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player,
 	network.SendPDU(conn, "select", targetList)
 	pdu, err = network.ReadPDU(conn)
 	if err != nil {
-		// Handle connection error
+		// Handle connection error, set GameOver and signal
 		gs.Mutex.Lock()
-		gs.GameOver = true
-		gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", attacker.Username, defender.Username))
+		if !gs.GameOver {
+			gs.GameOver = true
+			gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", attacker.Username, defender.Username))
+			close(gs.gameOverChan) // Signal game over
+		}
 		gs.Mutex.Unlock()
 		return
 	}
@@ -253,6 +292,7 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player,
 				gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying the King Tower!", attacker.Username))
 				AddExp(attacker, 30)
 				AddExp(defender, 10)
+				close(gs.gameOverChan) // Signal game over
 			}
 			gs.Mutex.Unlock()
 		}
@@ -262,6 +302,12 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player,
 // endGameByTime determines the winner when the game timer runs out.
 // Winner is the player who destroyed more opponent towers.
 func (gs *GameSession) endGameByTime() {
+	// This function should only be called if IsTimedGame is true
+	if !gs.IsTimedGame {
+		fmt.Println("WARNING: endGameByTime called for untimed game.")
+		return
+	}
+
 	// Count destroyed towers for each player
 	p1DestroyedTowers := countDestroyedTowers(gs.Player2) // Player1 destroyed Player2's towers
 	p2DestroyedTowers := countDestroyedTowers(gs.Player1) // Player2 destroyed Player1's towers
@@ -281,9 +327,7 @@ func (gs *GameSession) endGameByTime() {
 		AddExp(gs.Player1, 10)
 		AddExp(gs.Player2, 10)
 	}
-	// Close connections after game ends
-	gs.Conn1.Close()
-	gs.Conn2.Close()
+	// Connections are NOT closed here. They are managed by handleConnectionWithPDU.
 }
 
 // countDestroyedTowers counts the number of towers with HP <= 0 for a given player.
