@@ -10,4 +10,5 @@ type Player struct {
 	Troops        []Troop   `json:"troops"`
 	GameModeTimed bool      `json:"-"` // Added for game mode selection, not persisted
 	WaitChannel   chan bool `json:"-"` // Channel for signaling match found (true) or timeout (false), not persisted
+	CritsLeft     int
 }

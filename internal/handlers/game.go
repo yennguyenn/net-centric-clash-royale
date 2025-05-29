@@ -17,6 +17,7 @@ import (
 const (
 	QueenHealAmount = 200
 	QueenMaxHealHP  = 1000
+	MaxCritsPerGame = 5
 )
 
 type GameSession struct {
@@ -69,6 +70,8 @@ func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn, isTimedGame 
 
 	p1.Troops = getRandomTroops(troops, 3)
 	p2.Troops = getRandomTroops(troops, 3)
+	p1.CritsLeft = MaxCritsPerGame
+	p2.CritsLeft = MaxCritsPerGame
 
 	fmt.Printf("DEBUG: %s got %d troops\n", p1.Username, len(p1.Troops))
 	fmt.Printf("DEBUG: %s got %d troops\n", p2.Username, len(p2.Troops))
@@ -214,132 +217,154 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player,
 	conn net.Conn) {
 	fmt.Printf("DEBUG: %s troop count before attack: %d\n",
 		attacker.Username, len(attacker.Troops))
-	if len(attacker.Troops) == 0 {
-		network.SendPDU(conn, "error", "❌ You have no troops to attack with.")
-		return
-	}
-	// Select troop
-	troopList := "Choose a troop to attack with:\n"
-	for i, t := range attacker.Troops {
-		troopList += fmt.Sprintf("%d. %s (ATK: %d, DEF: %d, Mana: %d)\n", i+1, t.Name, t.ATK, t.DEF, t.Mana)
-	}
-	network.SendPDU(conn, "select", troopList)
-	pdu, err := network.ReadPDU(conn)
-	if err != nil {
-		// Handle connection error, set GameOver and signal
-		gs.Mutex.Lock()
-		if !gs.GameOver {
-			gs.GameOver = true
-			gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", attacker.Username, defender.Username))
-			gs.Conn1.Close()
-			gs.Conn2.Close()
-			close(gs.gameOverChan)
+	for {
+		if len(attacker.Troops) == 0 {
+			network.SendPDU(conn, "error", "❌ You have no troops to attack with.")
+			return
 		}
-		gs.Mutex.Unlock()
-		return
-	}
-	troopIndex := parseIndex(pdu.Payload) - 1
-	if troopIndex < 0 || troopIndex >= len(attacker.Troops) {
-		network.SendPDU(conn, "error", "❌ Invalid troop selection.")
-		return
-	}
-	troop := attacker.Troops[troopIndex]
-	if attacker.Mana < troop.Mana {
-		network.SendPDU(conn, "error", fmt.Sprintf("❌ Not enough mana. You have %d, need %d. Turn skipped.", attacker.Mana, troop.Mana))
-		return
-	}
-
-	if strings.ToLower(troop.Name) == "queen" {
-		attacker.Mana -= troop.Mana
-		attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
-		var lowest *models.Tower
-		for i := range attacker.Towers {
-			t := &attacker.Towers[i]
-			if t.HP > 0 && (lowest == nil || t.HP < lowest.HP) {
-				lowest = t
-			}
+		// Select troop
+		troopList := "Choose a troop to attack with:\n"
+		for i, t := range attacker.Troops {
+			troopList += fmt.Sprintf("%d. %s (ATK: %d, DEF: %d, Mana: %d)\n", i+1, t.Name, t.ATK, t.DEF, t.Mana)
 		}
-		if lowest != nil {
-			oldHP := lowest.HP
-			lowest.HP += QueenHealAmount
-			if lowest.HP > QueenMaxHealHP {
-				lowest.HP = QueenMaxHealHP
-			}
-			network.SendPDU(conn, "result", fmt.Sprintf("💖 Queen healed your %s from %d ➡ %d HP", lowest.Type, oldHP, lowest.HP))
-		} else {
-			network.SendPDU(conn, "event", "⚠️ No towers available to heal.")
-		}
-		return
-	}
-
-	// Select target tower
-	guardsDown := true
-	for _, t := range defender.Towers {
-		if t.Type == "Guard Tower" && t.HP > 0 {
-			guardsDown = false
-			break
-		}
-	}
-	targetList := "Choose tower to attack:\n"
-	validIndices := []int{}
-	for i, t := range defender.Towers {
-		if t.HP <= 0 {
-			continue
-		}
-		if t.Type == "King Tower" && !guardsDown {
-			continue
-		}
-		targetList += fmt.Sprintf("%d. %s (HP: %d)\n", i+1, t.Type, t.HP)
-		validIndices = append(validIndices, i)
-	}
-	if len(validIndices) == 0 {
-		network.SendPDU(conn, "error", "❌ No valid towers to attack.")
-		return
-	}
-	network.SendPDU(conn, "select", targetList)
-	pdu, err = network.ReadPDU(conn)
-	if err != nil {
-		// Handle connection error, set GameOver and signal
-		gs.Mutex.Lock()
-		if !gs.GameOver {
-			gs.GameOver = true
-			gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", attacker.Username, defender.Username))
-			gs.Conn1.Close()
-			gs.Conn2.Close()
-			close(gs.gameOverChan)
-		}
-		gs.Mutex.Unlock()
-		return
-	}
-	targetIndex := parseIndex(pdu.Payload) - 1
-	if targetIndex < 0 || targetIndex >= len(defender.Towers) {
-		network.SendPDU(conn, "error", "❌ Invalid tower selection.")
-		return
-	}
-	tower := &defender.Towers[targetIndex]
-	damage := utils.CalculateDamage(troop.ATK, tower.DEF, tower.CRIT)
-	tower.HP -= damage
-
-	attacker.Mana -= troop.Mana
-	attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
-
-	network.SendPDU(conn, "result", fmt.Sprintf("💥 %s dealt %d damage to %s", troop.Name, damage, tower.Type))
-
-	if tower.HP <= 0 {
-		network.SendPDU(conn, "event", fmt.Sprintf("🏰 %s destroyed!", tower.Type))
-		if tower.Type == "King Tower" {
+		network.SendPDU(conn, "select", troopList)
+		pdu, err := network.ReadPDU(conn)
+		if err != nil {
+			// Handle connection error, set GameOver and signal
 			gs.Mutex.Lock()
 			if !gs.GameOver {
 				gs.GameOver = true
-				gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying the King Tower!", attacker.Username))
-				AddExp(attacker, 30)
-				AddExp(defender, 10)
+				gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", attacker.Username, defender.Username))
 				gs.Conn1.Close()
 				gs.Conn2.Close()
 				close(gs.gameOverChan)
 			}
 			gs.Mutex.Unlock()
+			return
 		}
+		troopIndex := parseIndex(pdu.Payload) - 1
+		if troopIndex < 0 || troopIndex >= len(attacker.Troops) {
+			network.SendPDU(conn, "error", "❌ Invalid troop selection.")
+			return
+		}
+		troop := attacker.Troops[troopIndex]
+		if attacker.Mana < troop.Mana {
+			network.SendPDU(conn, "error", fmt.Sprintf("❌ Not enough mana. You have %d, need %d. Turn skipped.", attacker.Mana, troop.Mana))
+			return
+		}
+
+		// Troop Queen
+		if strings.ToLower(troop.Name) == "queen" {
+			attacker.Mana -= troop.Mana
+			attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
+			var lowest *models.Tower
+			for i := range attacker.Towers {
+				t := &attacker.Towers[i]
+				if t.HP > 0 && (lowest == nil || t.HP < lowest.HP) {
+					lowest = t
+				}
+			}
+			if lowest != nil {
+				oldHP := lowest.HP
+				lowest.HP += QueenHealAmount
+				if lowest.HP > QueenMaxHealHP {
+					lowest.HP = QueenMaxHealHP
+				}
+				network.SendPDU(conn, "result", fmt.Sprintf("💖 Queen healed your %s from %d ➡ %d HP", lowest.Type, oldHP, lowest.HP))
+			} else {
+				network.SendPDU(conn, "event", "⚠️ No towers available to heal.")
+			}
+			return
+		}
+
+		// Ask if user wants to use crit
+		useCrit := false
+		if attacker.CritsLeft > 0 {
+			network.SendPDU(conn, "select", fmt.Sprintf("⚡ You have %d CRIT(s) left. Use crit for +20%% damage?\n1. Yes\n2. No", attacker.CritsLeft))
+			critPDU, _ := network.ReadPDU(conn)
+			if strings.TrimSpace(critPDU.Payload) == "1" {
+				useCrit = true
+				attacker.CritsLeft--
+				gs.Broadcast(fmt.Sprintf("⚡ %s used a CRIT!", attacker.Username))
+			}
+		}
+		// Select target tower
+		guardsDown := true
+		for _, t := range defender.Towers {
+			if t.Type == "Guard Tower" && t.HP > 0 {
+				guardsDown = false
+				break
+			}
+		}
+		targetList := "Choose tower to attack:\n"
+		validIndices := []int{}
+		for i, t := range defender.Towers {
+			if t.HP <= 0 {
+				continue
+			}
+			if t.Type == "King Tower" && !guardsDown {
+				continue
+			}
+			targetList += fmt.Sprintf("%d. %s (HP: %d)\n", i+1, t.Type, t.HP)
+			validIndices = append(validIndices, i)
+		}
+		if len(validIndices) == 0 {
+			network.SendPDU(conn, "error", "❌ No valid towers to attack.")
+			return
+		}
+		network.SendPDU(conn, "select", targetList)
+		pdu, err = network.ReadPDU(conn)
+		if err != nil {
+			// Handle connection error, set GameOver and signal
+			gs.Mutex.Lock()
+			if !gs.GameOver {
+				gs.GameOver = true
+				gs.Broadcast(fmt.Sprintf("🚫 %s disconnected. %s wins!", attacker.Username, defender.Username))
+				gs.Conn1.Close()
+				gs.Conn2.Close()
+				close(gs.gameOverChan)
+			}
+			gs.Mutex.Unlock()
+			return
+		}
+		targetIndex := parseIndex(pdu.Payload) - 1
+		if targetIndex < 0 || targetIndex >= len(defender.Towers) {
+			network.SendPDU(conn, "error", "❌ Invalid tower selection.")
+			return
+		}
+		tower := &defender.Towers[targetIndex]
+		damage := utils.CalculateDamage(troop.ATK, tower.DEF, useCrit)
+		tower.HP -= damage
+
+		attacker.Mana -= troop.Mana
+		attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
+
+		network.SendPDU(conn, "result", fmt.Sprintf("💥 %s dealt %d damage to %s", troop.Name, damage, tower.Type))
+
+		if tower.HP <= 0 {
+			network.SendPDU(conn, "event", fmt.Sprintf("🏰 %s destroyed!", tower.Type))
+			if tower.Type == "King Tower" {
+				gs.Mutex.Lock()
+				if !gs.GameOver {
+					gs.GameOver = true
+					gs.Broadcast(fmt.Sprintf("🎉 %s wins by destroying the King Tower!", attacker.Username))
+					AddExp(attacker, 30)
+					AddExp(defender, 10)
+					gs.Conn1.Close()
+					gs.Conn2.Close()
+					close(gs.gameOverChan)
+				}
+				gs.Mutex.Unlock()
+			}
+			if attacker.Mana < troop.Mana {
+				network.SendPDU(conn, "info", fmt.Sprintf("⛔ Not enough mana to continue. Remaining mana: %d", attacker.Mana))
+				break
+			}
+			continue
+		}
+
+		// If tower not destroyed, end attack
+		break
 	}
 }
 
@@ -387,12 +412,13 @@ func countDestroyedTowers(player *models.Player) int {
 
 func showStatus(conn net.Conn, player *models.Player) {
 	status := map[string]interface{}{
-		"username": player.Username,
-		"level":    player.Level,
-		"exp":      player.EXP,
-		"mana":     player.Mana,
-		"towers":   player.Towers,
-		"troops":   player.Troops,
+		"username":  player.Username,
+		"level":     player.Level,
+		"exp":       player.EXP,
+		"mana":      player.Mana,
+		"towers":    player.Towers,
+		"troops":    player.Troops,
+		"critsLeft": player.CritsLeft,
 	}
 	jsonData, _ := json.MarshalIndent(status, "", " ")
 	network.SendPDU(conn, "status", string(jsonData))
