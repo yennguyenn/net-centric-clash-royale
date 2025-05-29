@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"strings"
+	"strings" // Re-added for game mode selection logic
 	"sync"
-	"time"
+	"time" // Re-added for matchmaking timeout logic
 
-	"net-centric-clash-royale/internal/handlers"
+	"net-centric-clash-royale/internal/handlers" // Still needed for Authenticate, LoadPlayers, StartManaRegeneration, StartGameSession
 	"net-centric-clash-royale/internal/models"
 	"net-centric-clash-royale/internal/network"
 )
@@ -22,13 +22,11 @@ type playerQueueEntry struct {
 
 var (
 	// Separate queues for timed and untimed games.
-	// Maps are used for simplicity, as we only need to store one waiting player per mode.
 	timedQueue   map[string]playerQueueEntry
 	untimedQueue map[string]playerQueueEntry
 	queueMutex   sync.Mutex // Protects access to both queues
 
 	// Global mutex for player data and other shared resources.
-	// This is the mutex that was reported as "undefined". It is correctly declared here.
 	globalPlayerMutex sync.Mutex
 )
 
@@ -51,46 +49,59 @@ func main() {
 }
 
 func handleConnectionWithPDU(conn net.Conn, playerMap map[string]*models.Player) {
-	// Defer closing the connection. This goroutine will only return when the client
-	// disconnects or the game session it's part of explicitly closes the connection.
-	defer conn.Close()
+	// IMPORTANT: Removed defer conn.Close() from here.
+	// The GameSession (in internal/handlers/game.go) is now solely responsible
+	// for closing the connections (conn1 and conn2) when the game ends
+	// or a player disconnects during the game.
+	// This goroutine will block until the game session completes and closes the connection.
 
 	// Authenticate user (register/login)
-	// Pass the globalPlayerMutex by reference
 	player := handlers.Authenticate(conn, &playerMap, &globalPlayerMutex)
 	if player == nil {
-		return // Authentication failed or user disconnected
+		conn.Close() // Explicitly close connection if authentication fails
+		return       // Authentication failed or user disconnected
 	}
 
 	network.SendPDU(conn, "info", fmt.Sprintf("Welcome, %s!", player.Username))
 
 	for { // Loop to allow re-choosing game mode after timeout or failed match
-		network.SendPDU(conn, "menu", "Choose game mode:\n1. Timed Game (3 minutes)\n2. Untimed Game (play following turn)\nEnter 1 or 2:")
-		pdu, err := network.ReadPDU(conn)
-		if err != nil {
-			fmt.Println("❌ Failed to read PDU for game mode selection:", err)
-			return // Client disconnected
-		}
-		choice := strings.TrimSpace(pdu.Payload)
-
+		// --- Game Mode Selection Logic (re-integrated) ---
 		var isTimedGame bool
+		for { // Inner loop for game mode selection
+			network.SendPDU(conn, "menu", "Choose game mode:\n1. Timed Game (3 minutes)\n2. Untimed Game (play following turn)\nEnter 1 or 2:")
+			pdu, err := network.ReadPDU(conn)
+			if err != nil {
+				fmt.Println("❌ Failed to read PDU for game mode selection:", err)
+				return // Client disconnected
+			}
+			choice := strings.TrimSpace(pdu.Payload)
+
+			switch choice {
+			case "1":
+				isTimedGame = true
+				network.SendPDU(conn, "info", "You selected: Timed Game (3 minutes)")
+				break // Exit inner loop
+			case "2":
+				isTimedGame = false
+				network.SendPDU(conn, "info", "You selected: Untimed Game (play following turn)")
+				break // Exit inner loop
+			default:
+				network.SendPDU(conn, "error", "❗ Invalid choice. Please enter 1 or 2.")
+				continue // Loop back to ask again
+			}
+			break // Exit inner loop after valid choice
+		}
+		// --- End Game Mode Selection Logic ---
+
 		var currentQueue map[string]playerQueueEntry // Reference to the correct queue (timed or untimed)
 
-		switch choice {
-		case "1":
-			isTimedGame = true
+		if isTimedGame {
 			currentQueue = timedQueue
-			network.SendPDU(conn, "info", "You selected: Timed Game (3 minutes)")
-		case "2":
-			isTimedGame = false
+		} else {
 			currentQueue = untimedQueue
-			network.SendPDU(conn, "info", "You selected: Untimed Game (play following turn)")
-		default:
-			network.SendPDU(conn, "error", "❗ Invalid choice. Please enter 1 or 2.")
-			continue // Loop back to game mode selection
 		}
 
-		// --- Matchmaking Logic ---
+		// --- Matchmaking Logic (re-integrated) ---
 		queueMutex.Lock() // Lock for queue access
 
 		var opponentEntry playerQueueEntry
@@ -129,7 +140,7 @@ func handleConnectionWithPDU(conn net.Conn, playerMap map[string]*models.Player)
 				network.SendPDU(conn, "info", "Opponent found! Starting game...")
 
 				// This goroutine (the waiting player) now waits for the game to complete.
-				// The game session will eventually close the connections.
+				// The game session will close the connections when it's done.
 				// Reading from the connection will block until it's closed or data arrives.
 				_, err := network.ReadPDU(conn)
 				if err != nil {
@@ -165,7 +176,6 @@ func handleConnectionWithPDU(conn net.Conn, playerMap map[string]*models.Player)
 			// The game session will manage the connections and close them when the game ends.
 			go func(p1, p2 *models.Player, c1, c2 net.Conn, timedGame bool) {
 				playersArr := []*models.Player{p1, p2}
-				// Pass the globalPlayerMutex by reference
 				handlers.StartManaRegeneration(playersArr, &globalPlayerMutex)
 
 				// Start the game session and get the game over channel
