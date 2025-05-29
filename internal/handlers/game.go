@@ -14,6 +14,11 @@ import (
 	"net-centric-clash-royale/internal/utils"
 )
 
+const (
+	QueenHealAmount = 200
+	QueenMaxHealHP  = 1000
+)
+
 type GameSession struct {
 	Player1      *models.Player
 	Player2      *models.Player
@@ -244,7 +249,30 @@ func (gs *GameSession) HandleAttack(attacker, defender *models.Player,
 		return
 	}
 
-	// Determine if King Tower is allowed to be attacked
+	if strings.ToLower(troop.Name) == "queen" {
+		attacker.Mana -= troop.Mana
+		attacker.Troops = append(attacker.Troops[:troopIndex], attacker.Troops[troopIndex+1:]...)
+		var lowest *models.Tower
+		for i := range attacker.Towers {
+			t := &attacker.Towers[i]
+			if t.HP > 0 && (lowest == nil || t.HP < lowest.HP) {
+				lowest = t
+			}
+		}
+		if lowest != nil {
+			oldHP := lowest.HP
+			lowest.HP += QueenHealAmount
+			if lowest.HP > QueenMaxHealHP {
+				lowest.HP = QueenMaxHealHP
+			}
+			network.SendPDU(conn, "result", fmt.Sprintf("💖 Queen healed your %s from %d ➡ %d HP", lowest.Type, oldHP, lowest.HP))
+		} else {
+			network.SendPDU(conn, "event", "⚠️ No towers available to heal.")
+		}
+		return
+	}
+
+	// Select target tower
 	guardsDown := true
 	for _, t := range defender.Towers {
 		if t.Type == "Guard Tower" && t.HP > 0 {
