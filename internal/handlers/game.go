@@ -123,9 +123,38 @@ func StartGameSession(p1, p2 *models.Player, conn1, conn2 net.Conn, isTimedGame 
 		for !session.GameOver {
 			session.TakeTurn()
 		}
+		// Ask players if they want to play again after game ends
+		session.askRematch()
 	}()
 
 	return session.gameOverChan // Return the channel immediately
+}
+func (gs *GameSession) askRematch() {
+	ask := func(conn net.Conn) bool {
+		network.SendPDU(conn, "menu", "🔁 Do you want to play again?\n1. Yes\n2. No")
+		pdu, err := network.ReadPDU(conn)
+		if err != nil {
+			return false
+		}
+		return strings.TrimSpace(pdu.Payload) == "1"
+	}
+
+	playAgain1 := ask(gs.Conn1)
+	playAgain2 := ask(gs.Conn2)
+
+	if playAgain1 && playAgain2 {
+		network.SendPDU(gs.Conn1, "info", "🔄 Restarting game...")
+		network.SendPDU(gs.Conn2, "info", "🔄 Restarting game...")
+		go func() {
+			gameOverChan := StartGameSession(gs.Player1, gs.Player2, gs.Conn1, gs.Conn2, false)
+			<-gameOverChan
+		}()
+	} else {
+		network.SendPDU(gs.Conn1, "info", "👋 Game over. Thank you for playing!")
+		network.SendPDU(gs.Conn2, "info", "👋 Game over. Thank you for playing!")
+		gs.Conn1.Close()
+		gs.Conn2.Close()
+	}
 }
 
 func (gs *GameSession) TakeTurn() {
