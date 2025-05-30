@@ -208,11 +208,17 @@ func (gs *GameSession) TakeTurn() {
 
 	if active.Mana >= 10 && len(active.Troops) < 3 {
 		troops, _ := utils.LoadTroopsFromFile("data/troop.json")
-		newTroop := getRandomTroops(troops, 1)[0]
-		active.Troops = append(active.Troops, newTroop)
-		network.SendPDU(conn, "event", fmt.Sprintf("✨ %s joins your hand!", newTroop.Name))
+		for {
+			newTroop := getRandomTroops(troops, 1)[0]
+			// Only 1 Queen
+			if strings.ToLower(newTroop.Name) == "queen" && hasTroop(active.Troops, "queen") {
+				continue // skip if Queen already exists
+			}
+			active.Troops = append(active.Troops, newTroop)
+			network.SendPDU(conn, "event", fmt.Sprintf("✨ %s joins your hand!", newTroop.Name))
+			break
+		}
 	}
-
 	if !gs.GameOver {
 		if gs.TurnOwner == gs.Player1 {
 			gs.TurnOwner = gs.Player2
@@ -220,6 +226,15 @@ func (gs *GameSession) TakeTurn() {
 			gs.TurnOwner = gs.Player1
 		}
 	}
+}
+
+func hasTroop(troops []models.Troop, name string) bool {
+	for _, t := range troops {
+		if strings.ToLower(t.Name) == strings.ToLower(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (gs *GameSession) Broadcast(msg string) {
