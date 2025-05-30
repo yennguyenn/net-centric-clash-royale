@@ -14,7 +14,7 @@ type PDU struct {
 	Payload string `json:"payload"` // Nội dung cụ thể
 }
 
-// EncodePDU chuyển PDU thành []byte (để gửi đi)
+// EncodePDU chuyển PDU thành []byte để gửi đi
 func EncodePDU(pdu PDU) ([]byte, error) {
 	return json.Marshal(pdu)
 }
@@ -34,7 +34,7 @@ func SendPDU(conn net.Conn, pduType, payload string) error {
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n') // quan trọng để client đọc được dòng
+	data = append(data, '\n') // để client đọc được dòng
 	_, err = conn.Write(data)
 	return err
 }
