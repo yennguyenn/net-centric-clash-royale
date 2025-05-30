@@ -10,7 +10,7 @@ import (
 
 // PDU đại diện cho một tin nhắn truyền qua mạng
 type PDU struct {
-	Type    string `json:"type"`    // VD: "command", "info", "error", "status", "battle_log"
+	Type    string `json:"type"`
 	Payload string `json:"payload"` // Nội dung cụ thể
 }
 
