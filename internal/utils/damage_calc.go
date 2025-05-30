@@ -1,15 +1,5 @@
 package utils
 
-import (
-	"math/rand"
-	"time"
-)
-
-// Initialize random seed once
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
-
 // CalculateDamage tính toán lượng damage gây ra dựa trên ATK, DEF và CRIT%
 func CalculateDamage(atk int, def int, useCrit bool) int {
 	if useCrit {

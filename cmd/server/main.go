@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"strings"
 	"sync"
@@ -36,7 +37,8 @@ func init() {
 }
 
 func main() {
-	fmt.Println("🚀 Starting TCR Server on port 9000...")
+	rand.Seed(time.Now().UnixNano())
+	fmt.Println("🚀 Starting TCP Server on port 9000...")
 
 	players, err := handlers.LoadPlayers()
 	if err != nil {
